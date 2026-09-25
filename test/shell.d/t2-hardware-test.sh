@@ -22,6 +22,16 @@ grep -Fq 'KERNEL_CMDLINE[default]+=" intel_iommu=on iommu=pt pm_async=off mem_sl
   fail "the ISO no longer caches tiny-dfr"
 pass "fresh T2 setup uses t2bce-compatible suspend, fan, and Touch Bar defaults"
 
+# arch-mact2 dropped apple-bcm-firmware, so naming it fails the T2 install and
+# the ISO's offline mirror build with "target not found".
+! grep -Eq '^([^#]*[[:space:]])?apple-bcm-firmware([[:space:]]|$)' "$fix_t2" "$other_packages" ||
+  fail "T2 setup no longer names the dropped apple-bcm-firmware package"
+grep -Eq '^[[:space:]]+apple-bcm-firmware-fetcher \\$' "$fix_t2" ||
+  fail "T2 setup installs apple-bcm-firmware-fetcher"
+grep -qx 'apple-bcm-firmware-fetcher' "$other_packages" ||
+  fail "the ISO caches apple-bcm-firmware-fetcher"
+pass "T2 setup installs the renamed Broadcom firmware fetcher"
+
 test_tmp=$(mktemp -d)
 trap 'rm -rf "$test_tmp"' EXIT
 

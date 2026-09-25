@@ -3,11 +3,14 @@
 if lspci -nn | grep "106b:180[12]" >/dev/null; then
   echo "Detected MacBook with T2 chip. Installing support items..."
 
+  # arch-mact2 replaced apple-bcm-firmware with apple-bcm-firmware-fetcher, which
+  # copies the Wi-Fi and Bluetooth firmware off the macOS volume when it installs.
+  # It never fails the install, but a Mac with no macOS volume left gets no firmware.
   omarchy-pkg-add \
     linux-t2 \
     linux-t2-headers \
     apple-t2-audio-config \
-    apple-bcm-firmware \
+    apple-bcm-firmware-fetcher \
     t2fanrd
 
   # Enable T2 fan control
