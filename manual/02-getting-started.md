@@ -4,7 +4,7 @@ Omarchy is installed using an ISO. You can choose between a full-disk install, w
 
 [Download the Omarchy ISO](https://omarchy.org/) first, put it on a USB stick (use [balenaEtcher](https://etcher.balena.io/) on Mac/Windows or [caligula](https://github.com/ifd3f/caligula) on Linux), and boot off the stick.
 
-_You must turn off Secure Boot and/or TPM in the BIOS. You have to turn these off to be able to install Omarchy. They're Microsoft security schemes meant for Windows and Microsoft-affiliated Linux distributions._
+_Secure Boot has to be off to boot the installer. Once Omarchy is installed, `omarchy secureboot enable` turns it back on with keys owned by your machine; see [Secure Boot](52-secure-boot.md). Leave the TPM alone: nothing needs it disabled._
 
 Then answer the configuration questions, and confirm them like this:
 
