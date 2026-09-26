@@ -1,0 +1,137 @@
+#!/bin/bash
+
+# omarchy:summary=Vendor OmaSecBoot at a pinned commit as omarchy secureboot
+# omarchy:args=<commit>
+# omarchy:hidden=true
+
+# `omarchy secureboot` is OmaSecBoot (https://github.com/peregrinus879/omasecboot,
+# MIT), vendored rather than rewritten: its enrolment steps, loader sealing,
+# firmware workarounds and Windows handling carry a hardware record that a
+# rewrite would start again without. This copies it at a pinned commit and
+# renames its commands, paths and units to Omarchy's by rule, so taking an
+# upstream fix is bumping the pin and running this again, never a hand merge.
+#
+#   install/secureboot/   the engine that ships: bin/, lib/, limine/, systemd/,
+#                         LICENSE and VENDORED (the pin and the rules)
+#   test/secureboot/      its hermetic test suites, run by test/shell.d/secureboot-test.sh
+#   docs/secureboot/      its design documents, verbatim (command names per VENDORED)
+
+set -euo pipefail
+
+upstream=https://github.com/peregrinus879/omasecboot.git
+commit=${1:-}
+if [[ -z $commit ]]; then
+  echo "Usage: omarchy-dev-vendor-secureboot <commit>" >&2
+  exit 1
+fi
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || true
+if [[ -z $root || ! -f $root/bin/omarchy ]]; then
+  echo "Run this from an omarchy checkout." >&2
+  exit 1
+fi
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+git clone --quiet "$upstream" "$work/src"
+git -C "$work/src" -c advice.detachedHead=false checkout --quiet "$commit"
+commit=$(git -C "$work/src" rev-parse HEAD)
+version=$(sed -n 's/^pkgver=//p' "$work/src/PKGBUILD")
+
+engine=$root/install/secureboot
+tests=$root/test/secureboot
+docs=$root/docs/secureboot
+rm -rf "$engine" "$tests" "$docs"
+mkdir -p "$engine/bin" "$engine/lib" "$engine/limine" "$engine/systemd" "$tests/lib" "$docs"
+
+src=$work/src
+cp "$src/bin/omasecboot" "$engine/bin/omarchy-secureboot"
+cp "$src"/lib/*.sh "$engine/lib/"
+cp "$src/limine/90-omasecboot-sign" "$engine/limine/90-omarchy-secureboot-sign"
+cp "$src/systemd/omasecboot-watch@.path" "$engine/systemd/omarchy-secureboot-watch@.path"
+cp "$src/systemd/omasecboot-watch@.service" "$engine/systemd/omarchy-secureboot-watch@.service"
+cp "$src/LICENSE" "$engine/LICENSE"
+
+# The hermetic suites. OmaSecBoot's own packaging, release, document and
+# field-record checks (install, package, container, documents, records,
+# acceptance-*) stay behind with the tools they test.
+for suite in common limine sign status firmware windows commands; do
+  cp "$src/tests/$suite.sh" "$tests/$suite.sh"
+done
+cp "$src"/tests/lib/*.sh "$tests/lib/"
+cp "$src"/docs/*.md "$docs/"
+
+# The renames, in order: paths, then the specific command lines before the general ones.
+# shellcheck disable=SC2016 # sed expressions, literal on purpose.
+rules=(
+  # Executable paths first, so the command rules below leave them alone.
+  's#bin/omasecboot#bin/omarchy-secureboot#g'
+  's#@BINDIR@/omasecboot#@BINDIR@/omarchy-secureboot#g'
+  # User-facing commands. `omarchy secureboot` escalates with sudo itself.
+  's/sudo omasecboot setup/omarchy secureboot enable/g'
+  's/sudo omasecboot remove/omarchy secureboot disable/g'
+  's/sudo omasecboot /omarchy secureboot /g'
+  's/omasecboot windows /omarchy secureboot windows /g'
+  's/omasecboot setup/omarchy secureboot enable/g'
+  's/omasecboot remove/omarchy secureboot disable/g'
+  's/omasecboot (sign|status|version)/omarchy secureboot \1/g'
+  's/\$\{BOLD\}omasecboot\$\{NC\}/${BOLD}omarchy secureboot${NC}/g'
+  's/print_message "omasecboot /print_message "omarchy secureboot /'
+  's/\^omasecboot\\ \[0-9\]/^omarchy\\ secureboot\\ [0-9]/'
+  # The dispatcher's verbs.
+  's/^    setup\) cmd_setup/    enable) cmd_setup/'
+  's/^    remove\) cmd_remove/    disable) cmd_remove/'
+  's/check_root setup$/check_root enable/'
+  's/check_root remove$/check_root disable/'
+  # Files and units.
+  's/90-omasecboot-sign/90-omarchy-secureboot-sign/g'
+  's/omasecboot-watch@/omarchy-secureboot-watch@/g'
+  's#/var/lib/omasecboot#/var/lib/omarchy-secureboot#g'
+  # The hook and units come from omarchy-secureboot-integrate, not a package.
+  's/; reinstall the package"/; run ${BOLD}omarchy secureboot enable${NC} to put it back"/'
+  # The name it reports itself by.
+  's/OmaSecBoot/Omarchy Secure Boot/g'
+)
+sed_args=()
+for rule in "${rules[@]}"; do
+  [[ $rule == \#* ]] || sed_args+=(-e "$rule")
+done
+
+# The suites find the engine through ROOT_DIR, their own parent in upstream's
+# tree. Here the engine lives in install/secureboot and the suites beside it
+# in test/secureboot, so each suite gets both locations.
+# shellcheck disable=SC2016 # sed expressions, literal on purpose.
+test_rules=(
+  -e 's#^ROOT_DIR=\$\(realpath "\$\{BASH_SOURCE\[0\]%/\*\}/\.\."\)#SECUREBOOT_TESTS=$(realpath "${BASH_SOURCE[0]%/*}")\nROOT_DIR=$(realpath "$SECUREBOOT_TESTS/../../install/secureboot")#'
+  -e 's#\$ROOT_DIR/tests/#$SECUREBOOT_TESTS/#g'
+  -e 's#^  export FIX ROOT_DIR #  export FIX ROOT_DIR SECUREBOOT_TESTS #'
+  # They drive the dispatcher by its verbs, which are renamed above.
+  -e 's/(run_cli|start_cli) setup\b/\1 enable/g'
+  -e 's/(run_cli|start_cli) remove\b/\1 disable/g'
+  -e "s/'setup --force' 'remove now'/'enable --force' 'disable now'/"
+)
+
+find "$engine" -type f ! -name LICENSE -exec sed -E -i "${sed_args[@]}" {} +
+find "$tests" -type f -exec sed -E -i "${sed_args[@]}" "${test_rules[@]}" {} +
+chmod 755 "$engine/bin/omarchy-secureboot" "$engine/limine/90-omarchy-secureboot-sign"
+chmod 644 "$engine"/lib/*.sh "$engine"/systemd/* "$engine/LICENSE"
+
+{
+  echo "OmaSecBoot ${version}, vendored as omarchy secureboot."
+  echo
+  echo "Upstream: ${upstream%.git}"
+  echo "Commit:   ${commit}"
+  echo "Licence:  MIT, see LICENSE (copyright peregrinus879)"
+  echo
+  echo "Regenerated by bin/omarchy-dev-vendor-secureboot; do not edit these files by hand."
+  echo "Renames applied, in order:"
+  printf '  %s\n' "${rules[@]}"
+  echo
+  echo "Upstream's design documents are in docs/secureboot/ verbatim, so they name"
+  echo "the upstream command: its \`setup\` is \`omarchy secureboot enable\`, its"
+  echo "\`remove\` is \`omarchy secureboot disable\`, and the rest keep their names."
+} >"$engine/VENDORED"
+
+echo "Vendored OmaSecBoot ${version} (${commit:0:12}) into install/secureboot, test/secureboot and docs/secureboot."
+echo "Left for review: $(grep -rl 'omasecboot' "$engine" "$tests" | wc -l) files still mention omasecboot:"
+grep -rn 'omasecboot' "$engine" "$tests" | cut -c1-160 || true

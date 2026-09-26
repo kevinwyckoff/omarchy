@@ -1,0 +1,12 @@
+# Watches one file the seal depends on: the instance name is its escaped path.
+# "omarchy secureboot enable" enables one instance for limine.conf and one for the
+# primary loader. Changing either without the other stops Limine from booting,
+# limine.conf with Secure Boot on or off, a raw loader with it on.
+[Unit]
+Description=Watch %f for Omarchy Secure Boot
+
+[Path]
+PathChanged=%f
+
+[Install]
+WantedBy=multi-user.target
