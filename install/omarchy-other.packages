@@ -8,6 +8,7 @@ base-devel
 broadcom-wl-dkms
 btrfs-progs
 dkms
+efibootmgr
 egl-wayland
 gst-plugin-pipewire
 gtk4-layer-shell
@@ -36,6 +37,7 @@ pipewire-alsa
 pipewire-jack
 pipewire-pulse
 qt6-wayland
+sbctl
 snapper
 sof-firmware
 thermald
