@@ -1,0 +1,10 @@
+#!/bin/bash
+
+# omarchy:summary=Seal and sign the boot files again; safe to run at any time
+# omarchy:requires-sudo=true
+
+set -e
+
+# Also brings the hook and watchers up to the engine this update shipped.
+[[ ! -e /var/lib/omarchy-secureboot/enabled ]] || omarchy-secureboot-integrate
+sudo "$OMARCHY_PATH/install/secureboot/bin/omarchy-secureboot" sign "$@"

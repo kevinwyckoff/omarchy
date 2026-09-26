@@ -1,0 +1,15 @@
+#!/bin/bash
+
+# omarchy:summary=Keep Windows bootable beside Secure Boot: a Limine entry and a one-time firmware boot
+# omarchy:args=<preflight|setup|remove|status|bootnext|available>
+# omarchy:examples=omarchy secureboot windows preflight | omarchy secureboot windows setup | omarchy secureboot windows bootnext
+# omarchy:requires-sudo=true
+
+engine="$OMARCHY_PATH/install/secureboot/bin/omarchy-secureboot"
+
+# preflight only reads, and available is the menu's silent guard; the rest
+# change the firmware or the ESP.
+case ${1:-} in
+preflight | available) "$engine" windows "$@" ;;
+*) sudo "$engine" windows "$@" ;;
+esac

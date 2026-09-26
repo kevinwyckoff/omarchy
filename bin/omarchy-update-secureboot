@@ -1,0 +1,18 @@
+#!/bin/bash
+
+# omarchy:summary=Check that Secure Boot still covers the boot files after an update
+# omarchy:hidden=true
+# omarchy:requires-sudo=true
+
+# The Limine hook has already re-signed whatever this update's packages
+# changed. This brings the hook and watchers up to the engine the update
+# shipped, and says so when the result needs attention. It never fails the
+# update: the next boot is the engine's to report on, not the update's.
+[[ -e /var/lib/omarchy-secureboot/enabled ]] || exit 0
+
+omarchy-secureboot-integrate || true
+if ! sudo "$OMARCHY_PATH/install/secureboot/bin/omarchy-secureboot" status --quiet; then
+  echo -e '\e[31mSecure Boot needs attention. Run omarchy secureboot status before restarting.\e[0m'
+  echo
+fi
+exit 0

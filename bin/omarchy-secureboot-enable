@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# omarchy:summary=Turn on Secure Boot with your own keys; run it again after each step it asks for
+# omarchy:requires-sudo=true
+
+set -e
+
+# The engine does one firmware step per run and says what to do next, so the
+# same command is run again after each restart it asks for.
+omarchy-pkg-add sbctl efibootmgr
+omarchy-secureboot-integrate
+sudo "$OMARCHY_PATH/install/secureboot/bin/omarchy-secureboot" enable "$@"

@@ -1,0 +1,8 @@
+#!/bin/bash
+
+# omarchy:summary=Report the Secure Boot state and the next step
+# omarchy:args=[--quiet]
+# omarchy:examples=omarchy secureboot status | omarchy secureboot status --quiet
+# omarchy:requires-sudo=true
+
+sudo "$OMARCHY_PATH/install/secureboot/bin/omarchy-secureboot" status "$@"

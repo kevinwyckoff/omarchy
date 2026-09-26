@@ -1,0 +1,74 @@
+#!/bin/bash
+
+# omarchy:summary=Install or remove the Limine hook and watchers that keep Secure Boot's boot files signed
+# omarchy:args=[--remove]
+# omarchy:hidden=true
+# omarchy:requires-sudo=true
+
+set -e
+
+# The Secure Boot engine ships in the omarchy package under
+# install/secureboot, but its Limine hook and watcher units belong under /etc,
+# which the package does not write. They run as root on every kernel install
+# and every change to limine.conf, and call the engine by absolute path, so
+# they are only written while nothing but root can change that engine.
+
+engine_dir="$OMARCHY_PATH/install/secureboot"
+hook=/etc/boot/hooks/post.d/90-omarchy-secureboot-sign
+unit_dir=/etc/systemd/system
+units=(omarchy-secureboot-watch@.path omarchy-secureboot-watch@.service)
+
+case ${1:-} in
+"") ;;
+--remove)
+  sudo rm -f -- "$hook" "${units[@]/#/$unit_dir/}"
+  sudo systemctl daemon-reload
+  exit 0
+  ;;
+*)
+  echo "Usage: omarchy-secureboot-integrate [--remove]" >&2
+  exit 2
+  ;;
+esac
+
+# Every directory from / down to the engine, and every file in it, must be
+# root's and writable by nobody else.
+engine_is_root_only() {
+  local path owner mode
+
+  path=$(realpath -e -- "$engine_dir") || return 1
+  [[ -z $(find "$path" \( ! -user root -o -perm /022 \) -print -quit) ]] || return 1
+  while [[ $path != / ]]; do
+    path=${path%/*}
+    path=${path:-/}
+    read -r owner mode < <(stat -Lc '%u %a' -- "$path") || return 1
+    [[ $owner == "0" ]] && (( (8#$mode & 8#022) == 0 )) || return 1
+  done
+}
+
+if ! engine_is_root_only; then
+  echo -e "\e[31m$engine_dir can be changed by someone other than root.\e[0m" >&2
+  echo "The Secure Boot hook would run it as root at every kernel install, so it is not installed." >&2
+  echo "Secure Boot needs the packaged Omarchy in /usr/share/omarchy." >&2
+  exit 1
+fi
+
+render() {
+  sed "s|@BINDIR@|$engine_dir/bin|g" "$1"
+}
+
+# install_rendered MODE TEMPLATE TARGET: write only what changed, so a run on
+# a machine that is already current touches nothing.
+units_changed=0
+install_rendered() {
+  if ! cmp -s <(render "$2") "$3"; then
+    render "$2" | sudo install -Dm"$1" /dev/stdin "$3"
+    [[ $3 != "$unit_dir"/* ]] || units_changed=1
+  fi
+}
+
+install_rendered 755 "$engine_dir/limine/90-omarchy-secureboot-sign" "$hook"
+for unit in "${units[@]}"; do
+  install_rendered 644 "$engine_dir/systemd/$unit" "$unit_dir/$unit"
+done
+(( units_changed == 0 )) || sudo systemctl daemon-reload

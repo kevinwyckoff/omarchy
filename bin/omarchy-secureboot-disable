@@ -1,0 +1,13 @@
+#!/bin/bash
+
+# omarchy:summary=Return the boot files and Limine settings to stock; your keys stay in the firmware
+# omarchy:requires-sudo=true
+
+set -e
+
+sudo "$OMARCHY_PATH/install/secureboot/bin/omarchy-secureboot" disable "$@"
+
+# Until the engine has put the boot files back, the hook and watchers are what
+# keep them sealed and signed, so they go only once it no longer counts the
+# machine as set up.
+[[ -e /var/lib/omarchy-secureboot/enabled ]] || omarchy-secureboot-integrate --remove

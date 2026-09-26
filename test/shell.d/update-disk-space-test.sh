@@ -81,6 +81,7 @@ for command in \
   omarchy-update-orphan-pkgs \
   omarchy-hook \
   omarchy-update-analyze-logs \
+  omarchy-update-secureboot \
   omarchy-shell \
   omarchy-update-restart; do
   write_stub "$command" 'exit 0'
