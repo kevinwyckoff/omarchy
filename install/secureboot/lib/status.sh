@@ -1,0 +1,334 @@
+#!/bin/bash
+# Omarchy Secure Boot: the read-only report. It states what is true, counts what needs
+# attention and ends with the one next step.
+
+# "sign" repairs a problem unless it says otherwise: setup_problem marks what
+# only setup repairs, blocking_problem what no command of this tool repairs,
+# which includes everything that could not be read. The next step is chosen
+# from the worst kind seen.
+_status_problems=0 _status_next=sign _status_firmware=pending _status_sealed=true
+problem() {
+  fail "$@"
+  _status_problems=$((_status_problems + 1))
+}
+setup_problem() {
+  problem "$@"
+  [[ $_status_next == blocked ]] || _status_next=setup
+}
+blocking_problem() {
+  problem "$@"
+  _status_next=blocked
+}
+
+enabled_file() { printf '%s/enabled\n' "$(state_dir)"; }
+is_set_up() { [[ -e $(enabled_file) ]]; }
+
+limine_hook_path() { printf '/etc/boot/hooks/post.d/90-omarchy-secureboot-sign\n'; }
+
+# The menu entry that owns a limine.conf line: the nearest entry line above it.
+entry_title_for_line() {
+  awk -v target="$1" '
+    NR > target { exit }
+    { line = $0; sub(/^[[:space:]]+/, "", line) }
+    line ~ /^\// { sub(/^\/+\+?/, "", line); title = line }
+    END { print title }
+  ' "$(limine_config_path)"
+}
+
+show_firmware_status() {
+  local secure_boot setup_mode
+  if ! secure_boot=$(read_mode_variable SecureBoot) || ! setup_mode=$(read_mode_variable SetupMode); then
+    blocking_problem "Could not read the firmware's Secure Boot variables; is efivarfs mounted at /sys/firmware/efi/efivars?"
+    return
+  fi
+  if [[ $secure_boot == 1 ]]; then
+    pass "Secure Boot is on"
+  else
+    note "Secure Boot is off"
+  fi
+  [[ $setup_mode == 0 ]] || note "The firmware is in Setup Mode"
+  # Without keys there is no certificate to look for; the files section says so.
+  is_set_up && sbctl_keys_exist || return 0
+  if ! read_enrollment_plan 2>/dev/null || ! local_certificates_are_identified; then
+    blocking_problem "Could not tell from sbctl which certificates are yours, so the firmware's keys cannot be judged; look at the keys with ${BOLD}sudo sbctl status${NC}"
+  elif firmware_is_enrolled; then
+    pass "Your keys are enrolled in the firmware"
+    _status_firmware=enrolled
+    # SetupMode keeps reading 1 in the boot that wrote the PK (C10).
+    [[ $setup_mode == 0 ]] || _status_firmware=reboot
+    [[ $secure_boot == 0 ]] || _status_firmware=complete
+  elif [[ $secure_boot == 1 ]]; then
+    blocking_problem "Secure Boot is on, but the firmware does not hold your keys: it will refuse these boot files. Turn Secure Boot off, then run ${BOLD}omarchy secureboot enable${NC}"
+  else
+    note "Your keys are not enrolled in the firmware yet"
+  fi
+}
+
+# Microsoft's 2023 certificates (C9). Notes: this machine's boot chain does
+# not depend on them, what Microsoft can still deliver to it does.
+show_microsoft_2023_status() {
+  local name missing
+  for name in KEK db; do
+    if ! missing=$(missing_microsoft_2023 "$name"); then
+      blocking_problem "The firmware's ${name} variable cannot be read as a signature list"
+      continue
+    fi
+    [[ -n $missing ]] || continue
+    missing=$(paste -sd, - <<<"$missing")
+    case $name in
+      KEK) note "KEK does not hold ${missing}, which signs Microsoft's db and dbx updates from 2026 on: they cannot reach this machine" ;;
+      db) note "db does not hold ${missing//,/, }: Microsoft's db updates deliver what is missing, and those need Microsoft's 2023 certificate in KEK" ;;
+    esac
+  done
+}
+
+show_settings_status() {
+  local setting
+  for setting in "${MANAGED_SETTINGS[@]}"; do
+    if [[ $(effective_setting "${setting%%=*}") == "${setting#*=}" ]]; then
+      pass "${setting} is in effect"
+    else
+      problem "${setting} is not in effect; check $(limine_default_config)"
+    fi
+  done
+}
+
+show_loader_status() {
+  local shadow
+  if primary_is_proved; then
+    pass "The Limine loader is sealed over the current limine.conf and signed"
+  elif primary_is_sealed; then
+    problem "The Limine loader is sealed over the current limine.conf but not signed"
+  else
+    problem "The Limine loader is not sealed over the current limine.conf"
+    _status_sealed=false
+  fi
+  while IFS= read -r shadow; do
+    [[ -z $shadow ]] || blocking_problem "A second limine.conf shadows the real one; remove it: ${shadow}"
+  done < <(list_shadowing_configs)
+  case $(firmware_starts_primary; printf '%s' "$?") in
+    0) ;;
+    1) blocking_problem "The firmware has no active boot entry for the Limine loader, so this machine starts through the fallback path, which the firmware refuses with Secure Boot on. Run ${BOLD}sudo limine-install${NC}, check with ${BOLD}efibootmgr${NC}, and keep Secure Boot off until then" ;;
+    *) blocking_problem "Could not read the firmware's boot entries, so nothing shows that the firmware starts the Limine loader; check with ${BOLD}efibootmgr${NC}" ;;
+  esac
+  case $(fallback_state) in
+    absent) note "No fallback loader: after a limine.conf mistake only rescue media can boot this machine; ${BOLD}omarchy secureboot enable${NC} offers to add one" ;;
+    raw)
+      # The bytes prove upstream's copy; sbctl can only say that no seal and no
+      # signature by the current key are there (D6).
+      if cmp -s -- "$(package_loader_path)" "$(fallback_loader_path)" || raw_loader 2>/dev/null | cmp -s -- - "$(fallback_loader_path)"; then
+        pass "The fallback loader is upstream's raw copy, the rescue loader when Secure Boot is off"
+      else
+        note "The fallback loader carries no seal and no signature by the current key, as far as sbctl can tell; it is not byte for byte upstream's copy"
+      fi
+      # Upstream refreshes it only where its settings say so (C3), and never
+      # on a machine that Omarchy installed beside another system (C6). While
+      # upstream holds a Limine major back, its step would refresh nothing (C2).
+      if raw_loader 2>/dev/null | cmp -s -- - "$(package_loader_path)" &&
+        ! cmp -s -- "$(package_loader_path)" "$(fallback_loader_path)"; then
+        note "The fallback loader is another Limine build than the primary loader; ${BOLD}sudo limine-install --fallback${NC} refreshes it"
+      fi
+      ;;
+    altered) problem "The fallback loader is signed or sealed; it must stay upstream's raw copy" ;;
+    foreign) note "EFI/BOOT/BOOTX64.EFI is not a Limine loader and is left alone: after a limine.conf mistake only rescue media can boot this machine" ;;
+  esac
+}
+
+# The signing keys, every signable file, and room on the ESP for the next one.
+# Status 1 when the ESP cannot be listed: what follows reads the same files.
+show_signable_files_status() {
+  local files file state size largest=0 available
+  if sbctl_keys_exist; then
+    pass "sbctl's signing keys exist"
+  else
+    blocking_problem "sbctl has no signing keys, so nothing can be signed"
+  fi
+  files=$(list_signable_files) || {
+    blocking_problem "Could not list the EFI files on the ESP"
+    return 1
+  }
+  while IFS= read -r file; do
+    [[ -n $file ]] || continue
+    state=0
+    signature_state "$file" || state=$?
+    case $state in
+      0) pass "Signed: ${file}" ;;
+      1) problem "Not signed: ${file}" ;;
+      *) blocking_problem "sbctl could not tell whether this file is signed: ${file}" ;;
+    esac
+    size=$(stat -c %s -- "$file" 2>/dev/null) || size=0
+    (( size <= largest )) || largest=$size
+  done <<<"$files"
+  # A kernel update writes a whole new image and upstream reports success when
+  # that fails; an image that is rebuilt and signed again never deduplicates
+  # against its predecessor in the snapshot history, so the ESP fills faster
+  # than it did before setup (C2).
+  if available=$(free_bytes "$(esp_path)" 2>/dev/null) && (( available < largest )); then
+    note "The ESP has $((available / 1048576)) MiB free, less than its largest boot file needs ($(((largest + 1048575) / 1048576)) MiB): the next kernel update may not fit. Deleting old snapshots frees space"
+  fi
+}
+
+# Rows that would make sbctl sign a history file or the fallback in place.
+show_sbctl_rows_status() {
+  local rows file
+  if rows=$(list_harmful_sbctl_rows); then
+    while IFS= read -r file; do
+      [[ -z $file ]] || setup_problem "sbctl would sign this file in place at the next update: ${file}"
+    done <<<"$rows"
+  else
+    blocking_problem "Could not read sbctl's file list"
+  fi
+}
+
+# Path hashes of OS entries that no longer match, and the snapshot images
+# from before setup, which are upstream's and stay unsigned (D5).
+show_path_hash_status() {
+  local stale kind line file old_snapshots=0 unread_snapshots=0
+  if stale=$(list_stale_os_hashes); then
+    while IFS=$'\t' read -r kind line; do
+      [[ -n $line ]] || continue
+      if [[ $kind == unchecked ]]; then
+        note "Path hash in limine.conf line ${line%%:*} (entry: $(entry_title_for_line "${line%%:*}")) cannot be checked: the path is not under boot():/, so only the firmware can tell which volume it names"
+      else
+        setup_problem "Stale path hash in limine.conf line ${line%%:*} (entry: $(entry_title_for_line "${line%%:*}"))"
+      fi
+    done <<<"$stale"
+  else
+    blocking_problem "Could not check the path hashes in limine.conf"
+  fi
+
+  while IFS= read -r file; do
+    [[ -n $file ]] || continue
+    signature_state "$file" || case $? in
+      1) old_snapshots=$((old_snapshots + 1)) ;;
+      *) unread_snapshots=$((unread_snapshots + 1)) ;;
+    esac
+  done < <(list_history_files)
+  (( unread_snapshots == 0 )) || note "${unread_snapshots} snapshot image(s) could not be checked for a signature"
+  (( old_snapshots == 0 )) ||
+    note "${old_snapshots} snapshot image(s) predate Secure Boot setup and are unsigned: those entries boot only with Secure Boot off. They leave with snapshot rotation, or within seconds when those snapshots are deleted (${BOLD}sudo snapper -c root delete NUMBER${NC})"
+}
+
+show_files_status() {
+  show_signable_files_status || return 0
+  show_sbctl_rows_status
+  show_path_hash_status
+}
+
+# The Windows entry is in limine.conf exactly when it is enabled; the pass
+# keeps that so and leaves everything it cannot settle to this report.
+show_windows_status() {
+  local status=0 state
+  if [[ ! -e $(windows_flag) ]]; then
+    case $(windows_entry_state '') in
+      absent) ;;
+      misplaced) blocking_problem "$WINDOWS_ENTRY_MISPLACED" ;;
+      unknown) blocking_problem "Could not read $(limine_config_path)" ;;
+      *) problem "limine.conf holds a Windows entry of Omarchy Secure Boot's although the entry is not enabled" ;;
+    esac
+    return
+  fi
+  resolve_windows_target || status=$?
+  if (( status == 2 )); then
+    blocking_problem "The Windows entry is enabled, but the firmware's boot entries could not be read"
+    return
+  elif (( status == 3 )); then
+    blocking_problem "The Windows entry is enabled, but ${WINDOWS_TARGET_NAME} with ${BOLD}omarchy secureboot windows remove${NC}"
+    return
+  elif (( status != 0 )); then
+    blocking_problem "The Windows entry is enabled, but the firmware does not hold exactly one active Windows Boot Manager entry that BootOrder lists and whose name no other entry shares. Take the entry out with ${BOLD}omarchy secureboot windows remove${NC}, or leave the firmware one such entry (${BOLD}efibootmgr${NC} shows them)"
+    return
+  fi
+  state=$(windows_entry_state "$(windows_target_label)")
+  # The pass writes nothing into a limine.conf without entries (C6): the way
+  # out is upstream's, not sign.
+  if [[ $state == absent ]] && limine_conf_lacks_entries; then
+    blocking_problem "${WINDOWS_ENTRY_WAITS}; if none follows, run ${BOLD}sudo limine-update${NC}"
+    return
+  fi
+  case $state in
+    current) pass "The Windows entry restarts the machine into $(windows_target_label)" ;;
+    absent) problem "The Windows entry is missing from limine.conf" ;;
+    stale) problem "The Windows entry in limine.conf is not the one for $(windows_target_label)" ;;
+    displaced) problem "The Windows entry in limine.conf stands before the entries Omarchy orders, which shifts the entry Limine starts by default; ${BOLD}omarchy secureboot sign${NC} moves it after them" ;;
+    misplaced) blocking_problem "$WINDOWS_ENTRY_MISPLACED" ;;
+    unknown) blocking_problem "Could not read $(limine_config_path)" ;;
+  esac
+}
+
+show_integration_status() {
+  local hook
+  hook=$(limine_hook_path)
+  if [[ -x $hook ]]; then
+    pass "The Limine hook is installed"
+  else
+    blocking_problem "The Limine hook ${hook} is missing; run ${BOLD}omarchy secureboot enable${NC} to put it back"
+  fi
+  if watch_is_active; then
+    pass "The watchers of limine.conf and the loader are active"
+  else
+    problem "The watchers of limine.conf and the loader are not both active"
+  fi
+  # The pass does nothing beside a snapshot restore (C2), and nothing starts
+  # one when the restore ends, so a restore lock that stays is said.
+  if restore_in_progress; then
+    problem "A snapshot restore is running or was cut short: the hook and the watchers stay quiet while $(restore_lock_path) exists. When the restore has finished, run ${BOLD}omarchy secureboot sign${NC}. If no restore is running, the lock was left behind: remove it with ${BOLD}sudo rm $(restore_lock_path)${NC} first"
+  fi
+}
+
+show_next_step() {
+  if ! is_set_up; then
+    (( _status_problems > 0 )) || act "Next: ${BOLD}omarchy secureboot enable${NC}"
+  elif (( _status_problems == 0 )); then
+    case $_status_firmware in
+      complete) act "Nothing to do" ;;
+      reboot) act "Next: restart (${BOLD}systemctl reboot${NC}), then run ${BOLD}omarchy secureboot enable${NC} once more" ;;
+      enrolled) act "Next: ${BOLD}omarchy secureboot enable${NC} for the last step, turning Secure Boot on" ;;
+      pending) act "Next: ${BOLD}omarchy secureboot enable${NC} for the firmware step" ;;
+    esac
+  else
+    case $_status_next in
+      sign) act "Next: ${BOLD}omarchy secureboot sign${NC}" ;;
+      setup) act "Next: ${BOLD}omarchy secureboot enable${NC}" ;;
+      blocked) act "Next: resolve what is marked above, then run ${BOLD}omarchy secureboot enable${NC}" ;;
+    esac
+    if [[ $_status_sealed == true ]]; then
+      act "Do not reboot with Secure Boot on until this report is clean"
+    else
+      # A loader that is not sealed over limine.conf does not start at all (C1).
+      act "Do not reboot, with Secure Boot on or off, until the loader is sealed again"
+    fi
+  fi
+}
+
+# Exit 0 when nothing needs attention, 1 otherwise.
+show_status() {
+  local attention
+  _status_problems=0 _status_next=sign _status_firmware=pending _status_sealed=true
+  header "Status"
+  show_firmware_status
+  if ! is_set_up; then
+    # setup records the settings' originals before it writes "enabled", and
+    # remove deletes "enabled" first and the originals last. Originals without
+    # "enabled" are one of the two stopped half way, and either finishes it.
+    if [[ -e $(settings_originals_file) ]]; then
+      problem "An earlier setup or remove did not finish. Run ${BOLD}omarchy secureboot disable${NC} to return to stock, or ${BOLD}omarchy secureboot enable${NC} to set up again"
+    else
+      note "Omarchy Secure Boot is not set up on this machine"
+    fi
+  elif ! esp_is_mounted_vfat; then
+    blocking_problem "The EFI system partition is not mounted; mount it and run this again"
+  else
+    show_microsoft_2023_status
+    show_settings_status
+    show_loader_status
+    show_files_status
+    show_windows_status
+    note_windows_chainloads
+    show_integration_status
+    attention=$(attention_file)
+    [[ ! -e $attention ]] || problem "An earlier pass could not finish: $(<"$attention")"
+  fi
+  show_next_step
+  (( _status_problems == 0 ))
+}
