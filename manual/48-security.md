@@ -8,6 +8,10 @@ Omarchy takes security extremely seriously. This is meant to be an operating sys
 4. *Omarchy maintains its own packages and mirror*: Omarchy only relies on packages from Arch's own core/extra/multilib repositories and its own Omarchy Package Repository by default. You can install software directly from AUR, but the base install doesn't — only a few optional installs, like the third-party browsers, pull from the AUR.
 5. *Cloudflare protects us from DDoS*: All the Omarchy distribution infrastructure — the ISOs, the Omarchy packages, the Arch mirror — is protected behind Cloudflare's formidable DDoS shield and hosted on their CDN. This provides superb availability.
 
+## Secure Boot
+
+The installer needs Secure Boot off, but you can turn it back on afterwards with your own signing keys under _Setup > Security > Secure Boot_. See [Secure Boot](52-secure-boot.md).
+
 ## Changing your passwords
 
 You have two passwords on an encrypted install: the one that unlocks the drive at boot, and the one you log in and `sudo` with. Both can be changed under _Update > Password_ in the Omarchy menu — _Drive Encryption_ for the first, _User_ for the second. Changing the drive password asks for the current one first, so have it handy.

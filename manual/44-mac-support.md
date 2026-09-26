@@ -28,6 +28,8 @@ It is necessary to disable Apple's Secure Boot in order to boot the bootable USB
 6. Choose "No Security" from the Secure Boot options
 7. Choose "Allow booting from external or removable media" from the External Boot options
 
+Leave it that way. A Mac's Secure Boot is Apple's own and takes no keys but Apple's, so `omarchy secureboot` doesn't apply to Macs.
+
 #### Start the Installation
 
 1. Insert the USB drive
