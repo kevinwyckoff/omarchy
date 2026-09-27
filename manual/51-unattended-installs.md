@@ -65,7 +65,7 @@ Only `schema`, one `[[users]]` entry and `disk.target` are required; everything 
 The ISO has a `chefs-kitchen` command. You can run it from a second console on the live ISO (Ctrl+Alt+F2, log in as `root`):
 
 ```bash
-chefs-kitchen validate install.toml               # typos, missing keys, secrets in the wrong place
+chefs-kitchen validate --config install.toml      # typos, missing keys, secrets in the wrong place
 chefs-kitchen plan --config install.toml --yes    # which disk, what's on it, what would be erased
 ```
 
