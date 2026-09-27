@@ -16,6 +16,7 @@ set -euo pipefail
 PROVISIONING_DIR=/var/lib/omarchy/provisioning
 OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
 LOG_FILE=/var/log/omarchy-provision-owner.log
+VCONSOLE_CONF=/etc/vconsole.conf
 
 if (( EUID != 0 )); then
   echo "Error: omarchy-provision-owner must run as root" >&2
@@ -611,17 +612,26 @@ confirm_reboot() {
 
 # Load the layout on the live VT and persist it for the installed system.
 # systemd-firstboot writes both the console KEYMAP and the XKB layout Hyprland
-# reads, matching what the ISO's configure_keyboard does at install time. A
-# keymap localectl doesn't know keeps the default rather than failing (defensive;
-# the picker no longer offers any such layout).
+# reads, matching what the ISO's configure_keyboard does at install time. Like
+# configure_keyboard, carry the install's console font across: --force rewrites
+# vconsole.conf with only the keyboard lines, and without FONT= every image
+# mkinitcpio builds from here on leaves out the consolefont hook, warning each
+# time. A keymap localectl doesn't know keeps the default rather than failing
+# (defensive; the picker no longer offers any such layout).
 apply_keyboard() {
-  local keymap="$1"
+  local keymap="$1" font
   [[ $(tty 2>/dev/null) == /dev/tty* ]] && loadkeys "$keymap" 2>/dev/null || true
 
   if localectl --no-pager list-keymaps 2>/dev/null | grep -qix "$keymap"; then
-    systemd-firstboot --keymap="$keymap" --force >>"$LOG_FILE" 2>&1 || \
-      localectl set-keymap "$keymap" >>"$LOG_FILE" 2>&1 || \
-      log_step "could not persist keymap $keymap"
+    # systemd reads a key with blanks before it or around the =, so do the same.
+    font=$(grep -E '^[[:blank:]]*FONT(_MAP|_UNIMAP)?[[:blank:]]*=' "$VCONSOLE_CONF" 2>/dev/null || true)
+    if systemd-firstboot --keymap="$keymap" --force >>"$LOG_FILE" 2>&1; then
+      [[ -z $font ]] || printf '%s\n' "$font" >>"$VCONSOLE_CONF"
+    else
+      # localectl only edits the keyboard lines, so the font is still there.
+      localectl set-keymap "$keymap" >>"$LOG_FILE" 2>&1 ||
+        log_step "could not persist keymap $keymap"
+    fi
   else
     log_step "keymap $keymap unknown to localectl; keeping the default"
   fi
