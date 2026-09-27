@@ -16,6 +16,7 @@ set -euo pipefail
 PROVISIONING_DIR=/var/lib/omarchy/provisioning
 OMARCHY_PATH="${OMARCHY_PATH:-/usr/share/omarchy}"
 LOG_FILE=/var/log/omarchy-provision-owner.log
+VCONSOLE_CONF=/etc/vconsole.conf
 
 if (( EUID != 0 )); then
   echo "Error: omarchy-provision-owner must run as root" >&2
@@ -599,6 +600,7 @@ keyboard_form() {
   done
 
   apply_keyboard "$keyboard"
+  apply_keyboard_xkb "$keyboard"
 }
 
 confirm_reboot() {
@@ -624,6 +626,33 @@ apply_keyboard() {
       log_step "could not persist keymap $keymap"
   else
     log_step "keymap $keymap unknown to localectl; keeping the default"
+  fi
+}
+
+# systemd derives the XKB layout the desktop reads from its kbd-model-map, and
+# persists a keymap with no row there as KEYMAP alone, which Hyprland takes as
+# US. The picker names the layout for each such keymap it offers; add it right
+# after KEYMAP once apply_keyboard has persisted this keymap. A keymap systemd
+# did map already has XKBLAYOUT and is left exactly as systemd wrote it.
+apply_keyboard_xkb() {
+  local keymap="$1" settings line contents=""
+
+  settings=$(omarchy_keyboard_xkb_settings "$keymap")
+  [[ -n $settings ]] || return 0
+  grep -qxF "KEYMAP=$keymap" "$VCONSOLE_CONF" 2>/dev/null || return 0
+  grep -q '^XKBLAYOUT=' "$VCONSOLE_CONF" && return 0
+
+  while IFS= read -r line || [[ -n $line ]]; do
+    contents+="$line"$'\n'
+    if [[ $line == "KEYMAP=$keymap" ]]; then
+      contents+="$settings"$'\n'
+    fi
+  done <"$VCONSOLE_CONF"
+
+  if printf '%s' "$contents" >"$VCONSOLE_CONF"; then
+    log_step "keymap $keymap has no XKB layout in systemd's map; set ${settings%%$'\n'*} from the picker"
+  else
+    log_step "could not set the XKB layout for keymap $keymap"
   fi
 }
 

@@ -133,6 +133,73 @@ assert_status 0 "keyboard prompt succeeds"
 grep -qF -- '--selected English (US)' "$GUM_ARGS" || fail "keyboard prompt preselects English (US)"
 pass "keyboard prompt maps the chosen label to its keymap"
 
+run_prompt omarchy_prompt_keyboard "0:Polish"
+assert_status 0 "keyboard prompt accepts a layout that carries an XKB layout"
+[[ $(field keyboard) == "pl" ]] || fail "a row's XKB layout stays out of the keymap the prompt answers" "$(field keyboard)"
+! grep -q '|' "$tmp_dir/stdin.1" || fail "keyboard prompt offers labels only" "$(grep '|' "$tmp_dir/stdin.1")"
+pass "keyboard prompt answers the console keymap for rows with an XKB layout"
+
+# Each row is label|keymap, plus an XKB layout[:variant] where systemd has none
+malformed=$(awk -F'|' 'NF < 2 || NF > 3 || $1 == "" || $2 == "" ||
+  (NF == 3 && $3 !~ /^[a-z]+(:[A-Za-z0-9_-]+)?$/)' <<<"$OMARCHY_KEYBOARD_LAYOUTS")
+[[ -z $malformed ]] || fail "every layout row is label|keymap with an optional layout[:variant]" "$malformed"
+pass "every layout row is label|keymap with an optional layout[:variant]"
+
+[[ $(omarchy_keyboard_xkb_settings pl) == $'XKBLAYOUT=pl\nXKBMODEL=pc105\nXKBOPTIONS=terminate:ctrl_alt_bksp' ]] ||
+  fail "a pinned layout reads as systemd-firstboot writes a mapped one" "$(omarchy_keyboard_xkb_settings pl)"
+[[ $(omarchy_keyboard_xkb_settings colemak) == $'XKBLAYOUT=us\nXKBMODEL=pc105\nXKBVARIANT=colemak\nXKBOPTIONS=terminate:ctrl_alt_bksp' ]] ||
+  fail "a pinned variant lands between the model and the options" "$(omarchy_keyboard_xkb_settings colemak)"
+for keymap in us de pl2 ""; do
+  [[ -z $(omarchy_keyboard_xkb_settings "$keymap") ]] ||
+    fail "no XKB settings for '$keymap', which the list pins nothing for" "$(omarchy_keyboard_xkb_settings "$keymap")"
+done
+pass "the list's XKB settings exist only for the keymaps it pins a layout for"
+
+# Installs match their vconsole.conf against these pins to keep the XKB lines
+# out of the initramfs, so changing one sends existing installs' desktop layout
+# to the LUKS prompt. Changing a pin has to be a decision, not an accident.
+pins=$(awk -F'|' 'NF == 3 { print $2 "|" $3 }' <<<"$OMARCHY_KEYBOARD_LAYOUTS" | sort)
+expected_pins=$(printf '%s\n' 'azerty|fr' 'bg-cp1251|bg:phonetic' 'colemak|us:colemak' 'cz|cz:qwerty' \
+  'de_CH-latin1|ch' 'kyrgyz|kg' 'no-latin1|no' 'pl|pl' 'ua|ua' | sort)
+[[ $pins == "$expected_pins" ]] || fail "the list pins exactly the nine layouts installs were written with" "$pins"
+pass "the list pins exactly the nine layouts installs were written with"
+
+# kbd's azerty is the French AZERTY console keymap and kbd has no Azerbaijani
+# one, so a row offering it as Azerbaijani gave a French console.
+! grep -q '^Azerbaijani|' <<<"$OMARCHY_KEYBOARD_LAYOUTS" ||
+  fail "no row offers the French azerty keymap as Azerbaijani" "$(grep '^Azerbaijani|' <<<"$OMARCHY_KEYBOARD_LAYOUTS")"
+grep -qx 'French (AZERTY)|azerty|fr' <<<"$OMARCHY_KEYBOARD_LAYOUTS" ||
+  fail "azerty is offered as French (AZERTY) with the French XKB layout"
+pass "the azerty keymap is labelled as the French layout it is"
+
+# Every offered layout has to reach Hyprland: through systemd's kbd-model-map,
+# or through the list's own XKB layout, which must be one xkeyboard-config has.
+kbd_model_map=/usr/share/systemd/kbd-model-map
+if [[ -r $kbd_model_map ]]; then
+  unmapped=$(awk -F'|' 'NR == FNR { if ($0 !~ /^[[:space:]]*#/) mapped[$1] = 1; next }
+    !($2 in mapped) && $3 == "" { print $1 "|" $2 }' FS='[[:space:]]+' "$kbd_model_map" FS='|' - <<<"$OMARCHY_KEYBOARD_LAYOUTS")
+  [[ -z $unmapped ]] ||
+    fail "every layout without a kbd-model-map row names its XKB layout" "unmapped:"$'\n'"$unmapped"
+  pass "every layout without a kbd-model-map row names its XKB layout"
+else
+  skip "every layout without a kbd-model-map row names its XKB layout (no $kbd_model_map)"
+fi
+
+xkb_rules=/usr/share/X11/xkb/rules/evdev.lst
+if [[ -r $xkb_rules ]]; then
+  unknown=$(awk -F'|' 'NF == 3 { print $3 }' <<<"$OMARCHY_KEYBOARD_LAYOUTS" | while IFS=: read -r layout variant; do
+    if [[ -n $variant ]]; then
+      awk -v l="$layout" -v v="$variant" '/^! /{ s = $2; next } s == "variant" && $1 == v && $2 == l ":" { f = 1 } END { exit !f }' "$xkb_rules"
+    else
+      awk -v l="$layout" '/^! /{ s = $2; next } s == "layout" && $1 == l { f = 1 } END { exit !f }' "$xkb_rules"
+    fi || printf '%s\n' "$layout${variant:+:$variant}"
+  done)
+  [[ -z $unknown ]] || fail "every XKB layout the list names exists in xkeyboard-config" "unknown:"$'\n'"$unknown"
+  pass "every XKB layout the list names exists in xkeyboard-config"
+else
+  skip "every XKB layout the list names exists in xkeyboard-config (no $xkb_rules)"
+fi
+
 run_prompt omarchy_prompt_keyboard "1:"
 assert_status "$OMARCHY_FORM_BACK" "keyboard prompt reports Esc as back"
 assert_returned "keyboard prompt survives Esc under set -e"

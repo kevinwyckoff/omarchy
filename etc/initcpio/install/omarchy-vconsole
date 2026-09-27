@@ -1,0 +1,38 @@
+#!/bin/bash
+
+# Added by omarchy_hooks.conf in place of FILES+=(/etc/vconsole.conf) when the
+# XKB lines in vconsole.conf are the ones Omarchy's keyboard picker adds for
+# its console keymap. The initramfs gets vconsole.conf without them, so
+# Plymouth reads the LUKS passphrase through the console keymap the keymap hook
+# loads, not the desktop's layout.
+#
+# The copy replaces a vconsole.conf an earlier hook such as sd-vconsole added
+# whole. A hook that adds the whole file after this one wins, and so does
+# FILES+=(/etc/vconsole.conf) in a drop-in, since FILES are added after every
+# hook.
+
+build() {
+  local vconsole_conf="${OMARCHY_VCONSOLE_CONF:-/etc/vconsole.conf}" stripped
+
+  [[ -f $vconsole_conf ]] || return 0
+
+  # add_file reads its source twice when the image already has the file (to
+  # compare, then to copy), so it gets a regular file, never a pipe.
+  stripped=$(mktemp --tmpdir omarchy-vconsole.XXXXXX) || {
+    error "omarchy-vconsole: no temporary file, so /etc/vconsole.conf is left out"
+    return 1
+  }
+  # The same XKB pattern omarchy_hooks.conf matches; keep the two alike.
+  if sed -E '/^[[:space:]]*XKB(LAYOUT|MODEL|VARIANT|OPTIONS)[[:space:]]*=/d' "$vconsole_conf" >"$stripped"; then
+    add_file "$stripped" /etc/vconsole.conf 644
+  fi
+  rm -f -- "$stripped"
+}
+
+help() {
+  cat <<HELPEOF
+This hook adds /etc/vconsole.conf without the XKB settings Omarchy's keyboard
+picker adds, so Plymouth reads keys through the console keymap the keymap hook
+loads.
+HELPEOF
+}
