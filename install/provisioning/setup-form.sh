@@ -29,26 +29,39 @@ OMARCHY_FORM_SIGNAL=130
 # so an alphabetical English (US) landed deep enough to sit alone at the edge
 # of a page of layouts nobody scanning for it reads. Up here the default and
 # its variants are the first thing on screen no matter how the list grows.
+#
+# Each row is label|console keymap, plus an XKB layout[:variant] for the
+# keymaps systemd's kbd-model-map has no row for. systemd-firstboot and
+# localectl persist KEYMAP and derive the XKB layout Hyprland reads from that
+# map, so without the third field those layouts would type as picked on the
+# console but as US on the desktop. The third field is the layout for the same
+# language whose letters sit where the console keymap puts them, hence cz's
+# QWERTY variant and bg-cp1251's phonetic one. It is for the desktop only:
+# omarchy_hooks.conf keeps it out of the initramfs, so the LUKS prompt reads
+# keys through the console keymap the passphrase was typed on. It recognizes
+# the lines by comparing them with what omarchy_keyboard_xkb_settings prints,
+# so changing a row's third field leaves the files written with the old one
+# going into the initramfs whole.
 OMARCHY_KEYBOARD_LAYOUTS=$'English (US)|us
 English (UK)|uk
 English (US, Dvorak)|dvorak
-English (US, Colemak)|colemak
-Azerbaijani|azerty
+English (US, Colemak)|colemak|us:colemak
 Belarusian|by
 Belgian|be-latin1
-Bulgarian|bg-cp1251
+Bulgarian|bg-cp1251|bg:phonetic
 Croatian|croat
-Czech|cz
+Czech|cz|cz:qwerty
 Danish|dk-latin1
 Dutch|nl
 Estonian|et
 Finnish|fi
 French|fr
+French (AZERTY)|azerty|fr
 French (Canada)|cf
 French (Switzerland)|fr_CH
 Georgian|ge
 German|de
-German (Switzerland)|de_CH-latin1
+German (Switzerland)|de_CH-latin1|ch
 Greek|gr
 Hebrew|il
 Hungarian|hu
@@ -57,13 +70,13 @@ Irish|ie
 Italian|it
 Japanese|jp106
 Kazakh|kazakh
-Kyrgyz|kyrgyz
+Kyrgyz|kyrgyz|kg
 Lao|la-latin1
 Latvian|lv
 Lithuanian|lt
 Macedonian|mk-utf
-Norwegian|no-latin1
-Polish|pl
+Norwegian|no-latin1|no
+Polish|pl|pl
 Portuguese|pt-latin1
 Portuguese (Brazil)|br-abnt2
 Romanian|ro
@@ -76,7 +89,24 @@ Spanish (Latin American)|la-latin1
 Swedish|sv-latin1
 Tajik|tj_alt-UTF8
 Turkish|trq
-Ukrainian|ua'
+Ukrainian|ua|ua'
+
+# The vconsole.conf XKB settings the list pins for a console keymap, one
+# assignment per line in the order systemd-firstboot writes them, with the
+# model and options it writes for a single mapped layout. Prints nothing for a
+# keymap systemd maps itself or one the list doesn't offer, and always
+# succeeds, so a caller under `set -e` can take it in an assignment.
+omarchy_keyboard_xkb_settings() {
+  awk -F'|' -v keymap="$1" '
+    $2 == keymap && $3 != "" {
+      split($3, xkb, ":")
+      print "XKBLAYOUT=" xkb[1]
+      print "XKBMODEL=pc105"
+      if (xkb[2] != "") print "XKBVARIANT=" xkb[2]
+      print "XKBOPTIONS=terminate:ctrl_alt_bksp"
+      exit
+    }' <<<"$OMARCHY_KEYBOARD_LAYOUTS"
+}
 
 OMARCHY_USERNAME_PATTERN='^[a-z_][a-z0-9_-]*[$]?$'
 OMARCHY_RESERVED_USERNAMES='^(root|bin|daemon|mail|ftp|http|nobody|dbus|systemd-coredump|systemd-network|systemd-oom|systemd-journal-remote|systemd-resolve|systemd-timesync|tss|uuidd|alpm|git|avahi|cups|cups-browsed|lp|_talkd|polkitd|rtkit|qemu|brltty|gluster|rpc|libvirt-qemu|pcscd|nvidia-persistenced|sddm)$'
